@@ -1,0 +1,58 @@
+{
+  "name": "botinvest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:web": "vite",
+    "dev:server": "tsx watch src/server/index.ts",
+    "build": "tsc -b && vite build",
+    "start": "NODE_ENV=production tsx src/server/index.ts",
+    "lint": "biome lint src tests scripts",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "node scripts/migrate.mjs"
+  },
+  "dependencies": {
+    "@fontsource/archivo-black": "^5.2.6",
+    "@fontsource/dm-sans": "^5.2.6",
+    "@fontsource/instrument-serif": "^5.3.0",
+    "@tanstack/react-query": "^5.90.2",
+    "canvas-confetti": "^1.9.4",
+    "dotenv": "^17.4.2",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.0.1",
+    "helmet": "^8.1.0",
+    "jose": "^6.1.0",
+    "lucide-react": "^0.468.0",
+    "pg": "^8.16.3",
+    "radix-ui": "^1.6.7",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "siwe": "^3.0.0",
+    "viem": "2.55.5",
+    "wagmi": "^2.16.9",
+    "zod": "^4.0.10"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.0",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.1.0",
+    "@types/pg": "^8.15.5",
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "@types/supertest": "^6.0.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.0",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.3",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.6",
+    "vitest": "^3.2.4"
+  }
+}

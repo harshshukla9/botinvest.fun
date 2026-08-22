@@ -1,0 +1,7 @@
+{
+  "buildCommand": "npm run db:migrate && npm run build",
+  "outputDirectory": "dist/client",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/handler?path=$1" }
+  ]
+}
