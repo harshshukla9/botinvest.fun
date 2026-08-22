@@ -1,6 +1,14 @@
 {
   "buildCommand": "npm run db:migrate && npm run build",
   "outputDirectory": "dist/client",
+  "functions": {
+    "api/handler.ts": {
+      "maxDuration": 60
+    },
+    "api/[...path].ts": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/handler?path=$1" }
   ]

@@ -23,4 +23,14 @@ describe("config", () => {
       "0xaBabc7Ddc03e501d190C676BF3d92ef0e6e87a3C",
     );
   });
+
+  it("derives PUBLIC_ORIGIN from Vercel when unset", () => {
+    const config = loadConfig({
+      SESSION_SECRET: "local-dev-only-secret-change-me-0001",
+      VERCEL_URL: "botinvest-fun.vercel.app",
+      VERCEL_PROJECT_PRODUCTION_URL: "botinvest-fun.vercel.app",
+    });
+    expect(config.PUBLIC_ORIGIN).toBe("https://botinvest-fun.vercel.app");
+    expect(config.allowedHosts).toContain("botinvest-fun.vercel.app");
+  });
 });

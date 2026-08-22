@@ -13,6 +13,15 @@ export function createServerApp() {
   const store = config.DATABASE_URL
     ? new PostgresStateStore(config.DATABASE_URL)
     : new MemoryStateStore();
+  if (!config.DATABASE_URL && config.NODE_ENV === "production") {
+    console.warn(
+      JSON.stringify({
+        event: "memory_store",
+        message:
+          "DATABASE_URL is unset; sessions live only inside one serverless isolate.",
+      }),
+    );
+  }
   const lumora = new LumoraOracle(
     config.network,
     config.LUMORA_API_BASE,

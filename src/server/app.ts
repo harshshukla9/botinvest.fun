@@ -195,13 +195,15 @@ export function createApp(deps: AppDependencies) {
     }
   });
 
-  app.get("/api/assets/:assetId/history", async (request, response, next) => {
+  app.get(
+    ["/api/assets/:assetId/history", "/api/assets/:assetId/history/:period"],
+    async (request, response, next) => {
     try {
       const assetId = String(request.params.assetId);
       const period = z
         .enum(HISTORY_PERIODS)
         .default("1W")
-        .parse(request.query.period ?? "1W");
+        .parse(request.params.period ?? request.query.period ?? "1W");
       const candidate = await deps.candidates.getRankingCandidate(assetId);
       if (!candidate) {
         throw new PolicyError("ASSET_NOT_FOUND", "Unknown asset.");

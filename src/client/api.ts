@@ -193,7 +193,7 @@ function assetHistory(
 	let requestForAsset = historyRequests.get(cacheKey);
 	if (!requestForAsset) {
 		requestForAsset = request<AssetHistoryResponse>(
-			`/api/assets/${encodeURIComponent(assetId)}/history?period=${period}`,
+			`/api/assets/${encodeURIComponent(assetId)}/history/${period}`,
 		)
 			.then((result) => {
 				if (result.source === "unavailable") historyRequests.delete(cacheKey);

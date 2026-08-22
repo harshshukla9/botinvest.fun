@@ -29,9 +29,10 @@ function Root() {
 			.then(setConfig)
 			.catch((caught) =>
 				setError(
-					caught instanceof Error
+					caught instanceof Error &&
+						!/basket could not be prepared/i.test(caught.message)
 						? caught.message
-						: "Could not load app configuration",
+						: "Could not reach the botcrates API. Refresh this page in a moment.",
 				),
 			);
 	}, []);

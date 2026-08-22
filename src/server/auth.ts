@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
 import { SiweMessage } from "siwe";
@@ -13,29 +13,46 @@ export type ExecutionActor = {
   chain: "BOTCHAIN";
 };
 
-const nonces = new Map<string, { expiresAt: number }>();
 const NONCE_TTL_MS = 10 * 60_000;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60_000;
 
 export class SiweWalletAuth {
   private readonly secret: Uint8Array;
-  private readonly origin: URL;
   private readonly chainId: number;
+  private readonly allowedHosts: Set<string>;
 
   constructor(config: AppConfig) {
     this.secret = new TextEncoder().encode(config.SESSION_SECRET);
-    this.origin = new URL(config.PUBLIC_ORIGIN);
     this.chainId = config.network.chainId;
+    this.allowedHosts = new Set(
+      config.allowedHosts.map((host) => normalizeHost(host)),
+    );
   }
 
+  /**
+   * HMAC-tagged nonce so /auth/nonce and /auth/verify can run on different
+   * serverless isolates without a shared nonce table.
+   */
   issueNonce() {
-    const now = Date.now();
-    for (const [issued, state] of nonces) {
-      if (state.expiresAt < now) nonces.delete(issued);
+    const random = randomBytes(16).toString("hex");
+    const expiresAt = (Date.now() + NONCE_TTL_MS).toString(16).padStart(12, "0");
+    const body = `${random}${expiresAt}`;
+    return `${body}${nonceMac(this.secret, body)}`;
+  }
+
+  consumeNonce(nonce: string) {
+    if (!/^[a-f0-9]{76}$/.test(nonce)) return false;
+    const body = nonce.slice(0, 44);
+    const mac = nonce.slice(44);
+    const expected = nonceMac(this.secret, body);
+    if (
+      mac.length !== expected.length ||
+      !timingSafeEqual(Buffer.from(mac, "hex"), Buffer.from(expected, "hex"))
+    ) {
+      return false;
     }
-    const nonce = randomBytes(16).toString("hex");
-    nonces.set(nonce, { expiresAt: now + NONCE_TTL_MS });
-    return nonce;
+    const expiresAt = Number.parseInt(body.slice(32), 16);
+    return Number.isFinite(expiresAt) && expiresAt > Date.now();
   }
 
   async verify(
@@ -48,11 +65,9 @@ export class SiweWalletAuth {
     actor: ExecutionActor;
   }> {
     const siwe = new SiweMessage(message);
-    const nonceState = siwe.nonce ? nonces.get(siwe.nonce) : undefined;
-    if (!nonceState || nonceState.expiresAt < Date.now()) {
+    if (!siwe.nonce || !this.consumeNonce(siwe.nonce)) {
       throw new Error("SIWE_NONCE_INVALID");
     }
-    nonces.delete(siwe.nonce);
     const valid = await verifyMessage({
       address: addressSchema.parse(siwe.address) as `0x${string}`,
       message,
@@ -62,7 +77,7 @@ export class SiweWalletAuth {
     if (Number(siwe.chainId) !== this.chainId) {
       throw new Error("SIWE_WRONG_CHAIN");
     }
-    if (!domainsMatch(siwe.domain, this.origin.host)) {
+    if (!this.allowedHosts.has(normalizeHost(siwe.domain))) {
       throw new Error("SIWE_WRONG_DOMAIN");
     }
     const wallet = addressSchema.parse(siwe.address).toLowerCase();
@@ -95,10 +110,12 @@ export class SiweWalletAuth {
   }
 }
 
-function domainsMatch(actual: string, expected: string) {
-  const normalize = (value: string) =>
-    value.toLowerCase().replace("127.0.0.1", "localhost");
-  return normalize(actual) === normalize(expected);
+function nonceMac(secret: Uint8Array, body: string) {
+  return createHmac("sha256", secret).update(body).digest("hex").slice(0, 32);
+}
+
+function normalizeHost(value: string) {
+  return value.toLowerCase().replace("127.0.0.1", "localhost");
 }
 
 function bearerToken(request: Request): string {
