@@ -161,6 +161,8 @@ let authProvider:
 	| {
 			getAccessToken: () => Promise<string | null>;
 			getWalletAddress: () => string | undefined;
+			/** Called when the server rejects the session so it can be dropped. */
+			onUnauthorized?: () => void;
 	  }
 	| undefined;
 
@@ -243,6 +245,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 			body && typeof body === "object" ? (body as Record<string, unknown>) : {};
 		const code =
 			typeof details.error === "string" ? details.error : "REQUEST_FAILED";
+		// A token the server will not accept can never recover on retry, so drop
+		// it and let the app fall back to the connect screen.
+		if (response.status === 401) requestAuthProvider?.onUnauthorized?.();
 		const message =
 			typeof details.message === "string"
 				? details.message

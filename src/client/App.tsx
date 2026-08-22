@@ -20,7 +20,6 @@ import {
 import {
 	ApiError,
 	api,
-	configureApiAuth,
 	type ExecutionRecord,
 	type FeedResponse,
 	type PublicConfig,
@@ -46,8 +45,8 @@ import { useWalletSession } from "./wallet-session";
 type View = "week" | "positions" | "receipts" | "account";
 type Stage = "loading" | "onboarding" | "swipe" | "review";
 type DecisionFeedback = "invest" | "skip";
-const LAST_EXECUTION_KEY = "botinvest:last-execution";
-const LAST_EXECUTION_CANDIDATES_KEY = "botinvest:last-execution-candidates";
+const LAST_EXECUTION_KEY = "botcrates:last-execution";
+const LAST_EXECUTION_CANDIDATES_KEY = "botcrates:last-execution-candidates";
 const FEED_RETRY_DELAY_MS = 900;
 
 function rememberWarnings(
@@ -113,14 +112,6 @@ export function App({ config }: { config: PublicConfig }) {
 	>(undefined);
 	const warningsByAssetId = useRef(new Map<string, string[]>());
 	const stableToken = config.stableToken;
-
-	useEffect(() => {
-		configureApiAuth({
-			getAccessToken: async () => token || null,
-			getWalletAddress: () => wallet || undefined,
-		});
-		return () => configureApiAuth(undefined);
-	}, [token, wallet]);
 
 	useEffect(() => {
 		removeLegacyPreferences();

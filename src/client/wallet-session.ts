@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SiweMessage } from "siwe";
-import { getAddress } from "viem";
-import { api, type PublicConfig } from "./api";
+import { api, configureApiAuth, type PublicConfig } from "./api";
+import { prepareSiweMessage } from "./siwe-message";
 import {
 	connectMetaMask,
 	getMetaMaskProvider,
@@ -10,7 +9,7 @@ import {
 	type EthereumProvider,
 } from "./metamask";
 
-const SESSION_STORAGE_KEY = "botinvest:siwe-session";
+const SESSION_STORAGE_KEY = "botcrates:siwe-session";
 
 interface StoredSession {
 	wallet: string;
@@ -31,7 +30,31 @@ function readStoredSession(): StoredSession | undefined {
 	}
 }
 
+/**
+ * Requests must carry the token as soon as it exists. React commits child
+ * effects before parent effects, so wiring the API from an effect in `App` lets
+ * children fire authenticated calls a beat too early and get a 401. Holding the
+ * session here and reading it at request time removes the ordering entirely.
+ */
+let activeSession: StoredSession | undefined;
+const sessionListeners = new Set<(session: StoredSession | undefined) => void>();
+
+function registerApiAuth() {
+	configureApiAuth({
+		getAccessToken: async () => activeSession?.token ?? null,
+		getWalletAddress: () => activeSession?.wallet,
+		onUnauthorized: () => {
+			if (!activeSession) return;
+			writeStoredSession(undefined);
+			for (const listener of sessionListeners) listener(undefined);
+		},
+	});
+}
+
+registerApiAuth();
+
 function writeStoredSession(session: StoredSession | undefined) {
+	activeSession = session;
 	if (!session) {
 		sessionStorage.removeItem(SESSION_STORAGE_KEY);
 		return;
@@ -58,9 +81,23 @@ export function useWalletSession(config: PublicConfig): WalletSession {
 	const [error, setError] = useState("");
 	const providerRef = useRef<EthereumProvider | undefined>(undefined);
 
-	const clear = useCallback(() => {
-		setSession(undefined);
-		writeStoredSession(undefined);
+	const applySession = useCallback((next: StoredSession | undefined) => {
+		writeStoredSession(next);
+		setSession(next);
+	}, []);
+
+	// Re-registering here keeps requests authenticated across a remount, and
+	// across a dev hot reload that swaps either module.
+	useEffect(() => {
+		registerApiAuth();
+		const onRejected = (next: StoredSession | undefined) => {
+			setSession(next);
+			setError("Your sign-in expired. Connect MetaMask to continue.");
+		};
+		sessionListeners.add(onRejected);
+		return () => {
+			sessionListeners.delete(onRejected);
+		};
 	}, []);
 
 	// Restore a session only when MetaMask still exposes the same account.
@@ -83,7 +120,7 @@ export function useWalletSession(config: PublicConfig): WalletSession {
 						? accounts[0].toLowerCase()
 						: undefined;
 				if (active && active === stored.wallet.toLowerCase()) {
-					setSession(stored);
+					applySession(stored);
 				} else {
 					writeStoredSession(undefined);
 				}
@@ -95,7 +132,7 @@ export function useWalletSession(config: PublicConfig): WalletSession {
 		return () => {
 			cancelled = true;
 		};
-	}, []);
+	}, [applySession]);
 
 	useEffect(() => {
 		const provider = providerRef.current ?? getMetaMaskProvider();
@@ -129,17 +166,15 @@ export function useWalletSession(config: PublicConfig): WalletSession {
 			const { provider, address } = await connectMetaMask(config);
 			providerRef.current = provider;
 			const { nonce } = await api.nonce();
-			const message = new SiweMessage({
+			const message = prepareSiweMessage({
 				domain: window.location.host,
-				address: getAddress(address),
+				address,
 				statement:
-					"Sign in to botinvest to build and execute baskets on BOT Chain.",
+					"Sign in to botcrates to build and execute baskets on BOT Chain.",
 				uri: window.location.origin,
-				version: "1",
 				chainId: config.chainId,
 				nonce,
-				issuedAt: new Date().toISOString(),
-			}).prepareMessage();
+			});
 			const signature = await personalSign(provider, address, message);
 			const verified = await api.verify(message, signature);
 			const next: StoredSession = {
@@ -147,24 +182,23 @@ export function useWalletSession(config: PublicConfig): WalletSession {
 				token: verified.token,
 				expiresAt: verified.expiresAt,
 			};
-			writeStoredSession(next);
-			setSession(next);
+			applySession(next);
 		} catch (caught) {
 			setError(readableWalletError(caught, "Could not connect MetaMask."));
 		} finally {
 			setConnecting(false);
 		}
-	}, [config]);
+	}, [applySession, config]);
 
 	const disconnect = useCallback(() => {
-		clear();
+		applySession(undefined);
 		void providerRef.current
 			?.request({
 				method: "wallet_revokePermissions",
 				params: [{ eth_accounts: {} }],
 			})
 			.catch(() => undefined);
-	}, [clear]);
+	}, [applySession]);
 
 	return useMemo(
 		() => ({

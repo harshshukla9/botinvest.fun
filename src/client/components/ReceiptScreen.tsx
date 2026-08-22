@@ -316,7 +316,7 @@ function useSettlementConfetti(record?: ExecutionRecord) {
 		if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 		const executionId = record.plan.executionId;
 		if (shownExecution.current !== executionId) {
-			const storageKey = `botinvest:settlement-confetti:${executionId}`;
+			const storageKey = `botcrates:settlement-confetti:${executionId}`;
 			try {
 				if (sessionStorage.getItem(storageKey)) return;
 				sessionStorage.setItem(storageKey, "shown");

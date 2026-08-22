@@ -18,7 +18,7 @@ const candidate = {
   evidenceIds: ["bdex:wbot"],
 } satisfies Candidate;
 
-describe("botinvest policy", () => {
+describe("botcrates policy", () => {
   it("accepts a canonical BOT Chain token identity", () => {
     expect(eligibleFeedCandidates([candidate])).toHaveLength(1);
   });

@@ -637,7 +637,7 @@ export function AccountScreen({
 							<div className="account-settings account-settings-form">
 								<fieldset className="settings-field execution-provider-setting">
 									<legend>Execution provider</legend>
-									<p>Choose where botinvest finds and executes your swaps.</p>
+									<p>Choose where botcrates finds and executes your swaps.</p>
 									<div className="execution-provider-options">
 										{(
 											[

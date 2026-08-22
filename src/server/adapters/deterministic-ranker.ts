@@ -6,7 +6,7 @@ import type {
 } from "../../domain/schemas.js";
 import type { FeedRankingProvider } from "./types.js";
 
-const MODEL_VERSION = "botinvest-deterministic/v1";
+const MODEL_VERSION = "botcrates-deterministic/v1";
 
 export class DeterministicRanker implements FeedRankingProvider {
   async rank(input: RankingInput) {
@@ -32,7 +32,7 @@ export class DeterministicRanker implements FeedRankingProvider {
       (_, index) => groups.flatMap((group) => group[index] ?? []),
     ).flat();
     const output: RankingOutput = {
-      schemaVersion: "botinvest-ranking-output/v1",
+      schemaVersion: "botcrates-ranking-output/v1",
       sessionId: input.sessionId,
       inputCommitment: input.inputCommitment,
       policyVersion: input.policyVersion,
@@ -48,7 +48,7 @@ export class DeterministicRanker implements FeedRankingProvider {
     return {
       output,
       receipt: {
-        network: "botinvest",
+        network: "botcrates",
         model: MODEL_VERSION,
         provider: "deterministic",
         teeVerified: false,

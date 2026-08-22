@@ -1,4 +1,4 @@
-# botinvest
+# botcrates
 
 Non-custodial, budget-capped investing on [BOT Chain](https://dev-docs.botchain.ai/docs/intro/). A user connects **MetaMask**, sets a USDT plan, swipes a ranked feed, and signs BDEX swaps from their own wallet.
 
@@ -18,7 +18,7 @@ Prices come from [Lumora](https://lumora-oracle.vercel.app/docs) (REST + on-chai
 ## Run locally
 
 ```bash
-cd botinvest
+cd botcrates
 cp .env.example .env
 npm install
 npm run dev

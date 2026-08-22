@@ -14,7 +14,6 @@ import {
   FEED_PAGE_SIZE,
   POLICY_VERSION,
   USDT_DECIMALS,
-  lumoraAssetId,
 } from "../domain/constants.js";
 import { callCommitment, executionIntent } from "../domain/execution-intent.js";
 import {
@@ -451,13 +450,21 @@ export function createApp(deps: AppDependencies) {
         },
       );
       if (!rankingCandidates.length) {
+        // An RWA-only plan is the common case here: a token qualifies as RWA
+        // only when a Lumora feed both covers it and agrees with the pool
+        // price, and no BDEX market currently clears that bar.
+        const rwaOnly =
+          preferences.assetClasses.length === 1 &&
+          preferences.assetClasses[0] === "RWA";
         throw new PolicyError(
           "NO_ELIGIBLE_CANDIDATES_FOR_PREFERENCES",
-          "No BDEX markets matched this plan.",
+          rwaOnly
+            ? "No BDEX market is currently tracked by a Lumora real-world asset feed. Include crypto in your asset mix to build a basket."
+            : "No BDEX market matched this plan. Lower the decision size or widen your asset mix.",
         );
       }
       const rankingInput = rankingInputSchema.parse({
-        schemaVersion: "botinvest-ranking-input/v1",
+        schemaVersion: "botcrates-ranking-input/v1",
         sessionId: session.id,
         epochId: session.epochId,
         policyVersion: POLICY_VERSION,
@@ -484,7 +491,7 @@ export function createApp(deps: AppDependencies) {
         FEED_PAGE_SIZE,
       );
       const feedInput = feedInputSchema.parse({
-        schemaVersion: "botinvest-feed-input/v1",
+        schemaVersion: "botcrates-feed-input/v1",
         sessionId: session.id,
         epochId: session.epochId,
         policyVersion: POLICY_VERSION,
@@ -518,7 +525,7 @@ export function createApp(deps: AppDependencies) {
       });
       const feed = validateFeed(
         {
-          schemaVersion: "botinvest-feed-output/v1",
+          schemaVersion: "botcrates-feed-output/v1",
           sessionId: session.id,
           inputCommitment: rankingInput.inputCommitment,
           policyVersion: POLICY_VERSION,
@@ -785,7 +792,7 @@ export function createApp(deps: AppDependencies) {
 
 function errorHandler(
   error: unknown,
-  _request: Request,
+  request: Request,
   response: Response,
   _next: NextFunction,
 ) {
@@ -827,7 +834,22 @@ function errorHandler(
     return;
   }
   const message = error instanceof Error ? error.message : "INTERNAL_ERROR";
-  if (/SIWE|WALLET_DOES_NOT_MATCH|ACCESS_TOKEN|AUTH/.test(message)) {
+  // `jose` reports a rejected token by error name, not message, so both are
+  // checked; otherwise an expired session surfaces as a confusing 500.
+  const name = error instanceof Error ? error.name : "";
+  if (
+    /SIWE|WALLET_DOES_NOT_MATCH|ACCESS_TOKEN|AUTH/.test(message) ||
+    name.startsWith("JW")
+  ) {
+    console.warn(
+      JSON.stringify({
+        event: "auth_rejected",
+        path: request.path,
+        reason: name ? `${name}: ${message}` : message,
+        hasAuthorization: Boolean(request.header("authorization")),
+        walletHeader: request.header("x-wallet-address") ?? null,
+      }),
+    );
     respondWithError(
       response,
       401,
@@ -836,6 +858,13 @@ function errorHandler(
     );
     return;
   }
+  console.error(
+    JSON.stringify({
+      event: "request_failed",
+      path: request.path,
+      reason: name ? `${name}: ${message}` : message,
+    }),
+  );
   respondWithError(response, 500, "INTERNAL_ERROR", message);
 }
 

@@ -1,6 +1,6 @@
 import { keccak256, toBytes, type Address, type Hex } from "viem";
 
-export const POLICY_VERSION = "botinvest-policy/v1";
+export const POLICY_VERSION = "botcrates-policy/v1";
 export const FEED_PAGE_SIZE = 10;
 export const AI_RANKING_POOL_SIZE = 60;
 export const MAX_SLIPPAGE_BPS = 50;

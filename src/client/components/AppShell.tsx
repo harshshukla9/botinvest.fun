@@ -57,9 +57,9 @@ export function AppShell({
 					type="button"
 					className="brand"
 					onClick={() => onNavigate("week")}
-					aria-label="botinvest home"
+					aria-label="botcrates home"
 				>
-					bot<span>invest</span>
+					bot<span>crates</span>
 				</button>
 				{navigationEnabled ? (
 					<nav aria-label="Primary navigation">

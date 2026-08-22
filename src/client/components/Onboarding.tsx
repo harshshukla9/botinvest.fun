@@ -267,6 +267,11 @@ export function Onboarding({
 						{busy ? "Waiting…" : "Connect MetaMask"}
 					</button>
 				</div>
+				{error ? (
+					<div className="error-message" role="alert">
+						{error}
+					</div>
+				) : null}
 				<div className="onboarding-points">
 					<p>
 						<span>1</span>

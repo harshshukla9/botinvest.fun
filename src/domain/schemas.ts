@@ -178,7 +178,7 @@ export const onboardingPreferencesSchema =
   });
 
 export const feedInputSchema = z.object({
-  schemaVersion: z.literal("botinvest-feed-input/v1"),
+  schemaVersion: z.literal("botcrates-feed-input/v1"),
   sessionId: z.string().min(1),
   epochId: z.string().min(1),
   policyVersion: z.literal(POLICY_VERSION),
@@ -193,7 +193,7 @@ export const feedInputSchema = z.object({
 });
 
 export const rankingInputSchema = z.object({
-  schemaVersion: z.literal("botinvest-ranking-input/v1"),
+  schemaVersion: z.literal("botcrates-ranking-input/v1"),
   sessionId: z.string().min(1),
   epochId: z.string().min(1),
   policyVersion: z.literal(POLICY_VERSION),
@@ -211,7 +211,7 @@ export const rankedAssetSchema = z.object({
 });
 
 export const rankingOutputSchema = z.object({
-  schemaVersion: z.literal("botinvest-ranking-output/v1"),
+  schemaVersion: z.literal("botcrates-ranking-output/v1"),
   sessionId: z.string().min(1),
   inputCommitment: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   policyVersion: z.literal(POLICY_VERSION),
@@ -238,7 +238,7 @@ export const feedCardSchema = z.object({
 });
 
 export const feedOutputSchema = z.object({
-  schemaVersion: z.literal("botinvest-feed-output/v1"),
+  schemaVersion: z.literal("botcrates-feed-output/v1"),
   sessionId: z.string().min(1),
   inputCommitment: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   policyVersion: z.literal(POLICY_VERSION),

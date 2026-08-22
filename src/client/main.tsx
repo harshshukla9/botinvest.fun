@@ -39,7 +39,7 @@ function Root() {
 	if (error) {
 		return (
 			<main className="fatal-state">
-				<h1>botinvest is unavailable</h1>
+				<h1>botcrates is unavailable</h1>
 				<p>{error}</p>
 			</main>
 		);
@@ -48,7 +48,7 @@ function Root() {
 		return (
 			<main className="loading-state">
 				<span />
-				<h1>Loading botinvest</h1>
+				<h1>Loading botcrates</h1>
 			</main>
 		);
 	}
