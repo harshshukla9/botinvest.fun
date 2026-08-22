@@ -6,28 +6,49 @@ import {
   type BotNetworkName,
 } from "../domain/constants.js";
 
-const envSchema = z.object({
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  PORT: z.coerce.number().int().positive().default(8787),
-  PUBLIC_ORIGIN: z.string().url().default("http://localhost:5173"),
-  SESSION_SECRET: z
-    .string()
-    .min(32)
-    .default("local-dev-only-secret-change-me-0001"),
-  BOT_CHAIN_NETWORK: z.enum(["mainnet", "testnet"]).default("testnet"),
-  BOT_CHAIN_RPC_URL: z.string().url().optional(),
-  LUMORA_API_BASE: z.string().url().default(LUMORA_API_BASE),
-  LUMORA_CONSUMER_ADDRESS: z
-    .string()
-    .regex(/^0x[a-fA-F0-9]{40}$/)
-    .optional(),
-  LUMORA_ORACLE_ADDRESS: z
-    .string()
-    .regex(/^0x[a-fA-F0-9]{40}$/)
-    .optional(),
-  DATABASE_URL: z.string().optional(),
-  BDEX_EXTRA_TOKENS: z.string().optional(),
-});
+const envSchema = z
+  .object({
+    NODE_ENV: z
+      .enum(["development", "test", "production"])
+      .default("development"),
+    PORT: z.coerce.number().int().positive().default(8787),
+    PUBLIC_ORIGIN: z.string().url().default("http://localhost:5173"),
+    SESSION_SECRET: z
+      .string()
+      .min(1)
+      .default("local-dev-only-secret-change-me-0001"),
+    BOT_CHAIN_NETWORK: z.enum(["mainnet", "testnet"]).default("testnet"),
+    BOT_CHAIN_RPC_URL: z.string().url().optional(),
+    LUMORA_API_BASE: z.string().url().default(LUMORA_API_BASE),
+    LUMORA_CONSUMER_ADDRESS: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/)
+      .optional(),
+    LUMORA_ORACLE_ADDRESS: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/)
+      .optional(),
+    DATABASE_URL: z.string().optional(),
+    BDEX_EXTRA_TOKENS: z.string().optional(),
+  })
+  .superRefine((env, context) => {
+    if (env.NODE_ENV === "production" && env.SESSION_SECRET.length < 32) {
+      context.addIssue({
+        code: "custom",
+        path: ["SESSION_SECRET"],
+        message: "SESSION_SECRET must be at least 32 characters in production",
+      });
+    }
+  })
+  .transform((env) => ({
+    ...env,
+    SESSION_SECRET:
+      env.SESSION_SECRET.length >= 32
+        ? env.SESSION_SECRET
+        : env.SESSION_SECRET.padEnd(32, "!"),
+    DATABASE_URL: env.DATABASE_URL || undefined,
+    BDEX_EXTRA_TOKENS: env.BDEX_EXTRA_TOKENS || undefined,
+  }));
 
 export type AppConfig = z.infer<typeof envSchema> & {
   networkName: BotNetworkName;

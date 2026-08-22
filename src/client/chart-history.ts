@@ -48,17 +48,9 @@ export function chartDateLabels(history: AssetHistoryResponse | undefined) {
 	const first = points[0];
 	const last = points.at(-1);
 	if (!history || !first || !last) return [];
-	const period = (history.period === "1H" ||
-		history.period === "1D" ||
-		history.period === "1W" ||
-		history.period === "1M" ||
-		history.period === "1Y" ||
-		history.period === "ALL"
-		? history.period
-		: "1D") as HistoryPeriod;
 	return [
-		formatChartDate(first.timestamp, period),
-		formatChartDate(last.timestamp, period),
+		formatChartDate(first.timestamp, history.period),
+		formatChartDate(last.timestamp, history.period),
 	];
 }
 

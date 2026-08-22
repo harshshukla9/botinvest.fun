@@ -14,6 +14,7 @@ import {
   FEED_PAGE_SIZE,
   POLICY_VERSION,
   USDT_DECIMALS,
+  lumoraAssetId,
 } from "../domain/constants.js";
 import { callCommitment, executionIntent } from "../domain/execution-intent.js";
 import {
@@ -33,11 +34,20 @@ import {
   onboardingPreferencesSchema,
   rankingInputSchema,
   type ExecutionPlan,
+  type RankingCandidate,
 } from "../domain/schemas.js";
 import type { BdexProvider } from "./adapters/bdex.js";
-import type { LumoraOracle } from "./adapters/lumora.js";
+import {
+  LumoraStalePriceError,
+  LumoraUnknownAssetError,
+  type LumoraOracle,
+} from "./adapters/lumora.js";
 import { ExecutionProviderError } from "./adapters/types.js";
-import type { CandidateProvider, ExecutionProvider, FeedRankingProvider } from "./adapters/types.js";
+import type {
+  CandidateProvider,
+  ExecutionProvider,
+  FeedRankingProvider,
+} from "./adapters/types.js";
 import { SiweWalletAuth, type ExecutionActor } from "./auth.js";
 import type { AppConfig } from "./config.js";
 import { sessionEpochId } from "./session-epoch.js";
@@ -53,6 +63,18 @@ export interface AppDependencies {
   lumora: LumoraOracle;
   auth?: SiweWalletAuth;
 }
+
+const HISTORY_PERIODS = ["1H", "1D", "1W", "1M", "1Y", "ALL"] as const;
+type HistoryPeriod = (typeof HISTORY_PERIODS)[number];
+
+const HISTORY_PERIOD_SECONDS: Record<HistoryPeriod, number> = {
+  "1H": 3_600,
+  "1D": 86_400,
+  "1W": 604_800,
+  "1M": 2_592_000,
+  "1Y": 31_536_000,
+  ALL: Number.POSITIVE_INFINITY,
+};
 
 export function createApp(deps: AppDependencies) {
   const app = express();
@@ -75,9 +97,6 @@ export function createApp(deps: AppDependencies) {
             "'self'",
             deps.config.network.rpcUrl,
             deps.config.LUMORA_API_BASE,
-            "https://rpc.botchain.ai",
-            "https://rpc.bohr.life",
-            "https://lumora-oracle.vercel.app",
           ],
         },
       },
@@ -88,24 +107,28 @@ export function createApp(deps: AppDependencies) {
     "/api",
     rateLimit({
       windowMs: 60_000,
-      limit: deps.config.NODE_ENV === "production" ? 90 : 240,
+      limit: deps.config.NODE_ENV === "production" ? 240 : 1_200,
       standardHeaders: "draft-8",
       legacyHeaders: false,
     }),
   );
 
-  app.get("/api/health", async (_request, response) => {
-    const [bdex, lumoraCount] = await Promise.all([
-      deps.execution.health(),
-      deps.lumora.listPrices().then((prices) => prices.length).catch(() => 0),
-    ]);
-    response.json({
-      status: "ok",
-      chainId: deps.config.network.chainId,
-      network: deps.config.networkName,
-      bdex: bdex.status,
-      lumoraFeeds: lumoraCount,
-    });
+  app.get("/api/health", async (_request, response, next) => {
+    try {
+      const [bdex, feeds] = await Promise.all([
+        deps.execution.health(),
+        deps.lumora.listPrices().then((prices) => prices.length).catch(() => 0),
+      ]);
+      response.json({
+        status: "ok",
+        chainId: deps.config.network.chainId,
+        network: deps.config.networkName,
+        bdex: bdex.status,
+        lumoraFeeds: feeds,
+      });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/api/config", (_request, response) => {
@@ -119,23 +142,26 @@ export function createApp(deps: AppDependencies) {
       explorerUrl: deps.config.network.explorerUrl,
       nativeCurrency: deps.config.network.nativeCurrency,
       stableToken: "USDT",
-      usdt: deps.config.network.usdt,
+      stableTokenAddress: deps.config.network.usdt,
+      stableTokenDecimals: USDT_DECIMALS,
       wbot: deps.config.network.wbot,
       lumora: {
         apiBase: deps.config.LUMORA_API_BASE,
-        consumer: deps.config.network.lumoraConsumer,
         oracle: deps.config.network.lumoraOracle,
+        consumer: deps.config.network.lumoraConsumer,
       },
       executionProviders: { BDEX: { available: true } },
       feedRankingProviders: { DETERMINISTIC: { available: true } },
-      periodBudgetBaseUnits: DEFAULT_BUDGET.periodBudgetBaseUnits,
-      slotBudgetBaseUnits: DEFAULT_BUDGET.slotBudgetBaseUnits,
       maxCards: DEFAULT_BUDGET.maxCards,
     });
   });
 
   app.get("/api/auth/nonce", (_request, response) => {
-    response.json({ nonce: auth.issueNonce(), chainId: deps.config.network.chainId });
+    response.json({
+      nonce: auth.issueNonce(),
+      chainId: deps.config.network.chainId,
+      issuedAt: new Date().toISOString(),
+    });
   });
 
   app.post("/api/auth/verify", async (request, response, next) => {
@@ -143,67 +169,28 @@ export function createApp(deps: AppDependencies) {
       const body = z
         .object({ message: z.string().min(1), signature: z.string().min(1) })
         .parse(request.body);
-      const verified = await auth.verify(body.message, body.signature);
-      response.json(verified);
+      const { token, wallet, expiresAt } = await auth.verify(
+        body.message,
+        body.signature,
+      );
+      response.json({ token, wallet, expiresAt });
     } catch (error) {
       next(error);
     }
   });
 
-  app.get("/api/balances/:wallet", requireActor(auth), async (request, response, next) => {
+  app.get("/api/assets/icons", async (_request, response, next) => {
     try {
-      const wallet = addressSchema.parse(request.params.wallet).toLowerCase() as Address;
-      assertSameWallet(response.locals.actor, wallet);
-      const [usdt, bot] = await Promise.all([
-        chainClient.readContract({
-          address: deps.config.network.usdt,
-          abi: erc20Abi,
-          functionName: "balanceOf",
-          args: [wallet],
-        }),
-        chainClient.getBalance({ address: wallet }),
-      ]);
-      response.json({
-        address: wallet,
-        usdtBalanceBaseUnits: usdt.toString(),
-        usdtDecimals: USDT_DECIMALS,
-        botBalanceWei: bot.toString(),
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/portfolio/:wallet", requireActor(auth), async (request, response, next) => {
-    try {
-      const wallet = addressSchema.parse(request.params.wallet).toLowerCase() as Address;
-      assertSameWallet(response.locals.actor, wallet);
-      const markets = await deps.bdex.listMarkets();
-      const prices = deps.lumora.indexBySymbol(await deps.lumora.listPrices().catch(() => []));
-      const holdings = (
-        await Promise.all(
-          markets.slice(0, 80).map(async (market) => {
-            const balance = await deps.bdex.tokenBalance(wallet, market.token);
-            if (balance === 0n) return;
-            const oracle = prices.get(market.symbol.toUpperCase());
-            const units = Number(formatUnits(balance, market.decimals));
-            return {
-              assetId: `bot:${deps.config.network.chainId}:${market.token.toLowerCase()}`,
-              symbol: market.symbol,
-              name: oracle?.title ?? market.name,
-              contract: market.token,
-              decimals: market.decimals,
-              balanceBaseUnits: balance.toString(),
-              balance: units,
-              priceUsd: oracle?.value,
-              valueUsd: oracle ? units * oracle.value : undefined,
-              lumoraFeedId: oracle?.feedId,
-              iconUrl: oracle?.icon,
-            };
-          }),
-        )
-      ).filter((item): item is NonNullable<typeof item> => Boolean(item));
-      response.json({ wallet, holdings });
+      const candidates = await deps.candidates.getRankingCandidates(
+        Number.MAX_SAFE_INTEGER,
+      );
+      const icons: Record<string, string> = {};
+      for (const candidate of candidates) {
+        if (!candidate.iconUrl) continue;
+        icons[candidate.symbol] = candidate.iconUrl;
+        icons[candidate.assetId] = candidate.iconUrl;
+      }
+      response.json({ icons });
     } catch (error) {
       next(error);
     }
@@ -212,53 +199,190 @@ export function createApp(deps: AppDependencies) {
   app.get("/api/assets/:assetId/history", async (request, response, next) => {
     try {
       const assetId = String(request.params.assetId);
-      const window = Number(request.query.window ?? 86_400);
-      const markets = await deps.bdex.listMarkets();
-      const match = markets.find(
-        (market) =>
-          `bot:${deps.config.network.chainId}:${market.token.toLowerCase()}` ===
-          assetId.toLowerCase(),
-      );
-      const prices = await deps.lumora.listPrices().catch(() => []);
-      const oracle =
-        (match && deps.lumora.indexBySymbol(prices).get(match.symbol.toUpperCase())) ||
-        prices.find((price) => price.feedId === assetId);
-      if (!oracle) {
-        response.json({ period: "1D", source: "unavailable", points: [] });
+      const period = z
+        .enum(HISTORY_PERIODS)
+        .default("1W")
+        .parse(request.query.period ?? "1W");
+      const candidate = await deps.candidates.getRankingCandidate(assetId);
+      if (!candidate) {
+        throw new PolicyError("ASSET_NOT_FOUND", "Unknown asset.");
+      }
+      // Oracle-tracked assets chart the signed feed; everything else charts the
+      // pool tape, which is the price that actually filled on BDEX.
+      const feedId = candidate.lumoraFeedId;
+      const source = feedId ? "lumora" : "bdex";
+      const sourceAsset = feedId ?? candidate.contract;
+      const full = feedId
+        ? await deps.lumora.series(feedId)
+        : candidate.contract
+          ? await deps.bdex.priceHistory(candidate.contract as Address)
+          : [];
+      if (full.length < 2) {
+        response.json({
+          period,
+          requestedPeriod: period,
+          source: "unavailable",
+          points: [],
+          isCompleteHistory: false,
+        });
         return;
       }
-      const points = await deps.lumora.history(oracle.feedId, window);
+
+      const cutoff =
+        period === "ALL"
+          ? 0
+          : Math.floor(Date.now() / 1000) - HISTORY_PERIOD_SECONDS[period];
+      const windowed = full.filter((point) => point.timestamp >= cutoff);
+      const points = (windowed.length >= 2 ? windowed : full).map(toChartPoint);
+
       response.json({
-        period: "1D",
-        source: "lumora",
-        points: points.map((point) => ({
-          timestamp: point.timestamp,
-          price: point.price,
-        })),
+        period,
+        requestedPeriod: period,
+        effectivePeriod:
+          period === "ALL"
+            ? points.length === full.length
+              ? "MAX"
+              : "LIMITED"
+            : period,
+        source,
+        points,
+        sourceAsset,
+        coverageStart: points[0]?.timestamp,
+        coverageEnd: points.at(-1)?.timestamp,
+        isCompleteHistory: points.length === full.length,
       });
     } catch (error) {
       next(error);
     }
   });
 
-  app.get("/api/assets/:assetId/icon", async (request, response, next) => {
+  app.get("/api/assets/:assetId/details", async (request, response, next) => {
     try {
-      const prices = await deps.lumora.listPrices();
-      const symbol = String(request.params.assetId).split(":").at(-1) ?? "";
-      const match =
-        prices.find((price) => price.feedId === request.params.assetId) ??
-        prices.find((price) => price.symbol.toLowerCase() === symbol.toLowerCase());
-      response.json({ icon: match?.icon ?? null });
+      const assetId = String(request.params.assetId);
+      const candidate = await deps.candidates.getRankingCandidate(assetId);
+      if (!candidate) {
+        throw new PolicyError("ASSET_NOT_FOUND", "Unknown asset.");
+      }
+      response.json({
+        assetId,
+        source: candidate.lumoraFeedId ? "lumora" : "bdex",
+        lumoraFeedId: candidate.lumoraFeedId,
+        lumoraFamily: candidate.lumoraFamily,
+        categories: assetCategories(candidate),
+        volume24hUsd: candidate.volume24hUsd,
+        contract: candidate.contract,
+        explorerUrl: candidate.contract
+          ? `${deps.config.network.explorerUrl}/token/${candidate.contract}`
+          : undefined,
+        websiteUrl: candidate.lumoraRoute
+          ? `${deps.config.LUMORA_API_BASE}/${candidate.lumoraRoute}`
+          : undefined,
+        community: [
+          {
+            label: "BDEX pool",
+            url: `${deps.config.network.explorerUrl}/address/${candidate.contract}`,
+          },
+          ...(candidate.lumoraFeedId
+            ? [
+                {
+                  label: "Lumora feed",
+                  url: `${deps.config.LUMORA_API_BASE}/api/prices/${encodeURIComponent(candidate.lumoraFeedId)}`,
+                },
+              ]
+            : []),
+        ],
+        updatedAt: candidate.marketDataUpdatedAt,
+      });
     } catch (error) {
       next(error);
     }
   });
 
+  app.get(
+    "/api/balances/:wallet/usdt",
+    requireActor(auth),
+    async (request, response, next) => {
+      try {
+        const wallet = addressSchema
+          .parse(request.params.wallet)
+          .toLowerCase() as Address;
+        assertSameWallet(response.locals.actor, wallet);
+        const [balanceBaseUnits, nativeBalanceWei] = await Promise.all([
+          chainClient.readContract({
+            address: deps.config.network.usdt,
+            abi: erc20Abi,
+            functionName: "balanceOf",
+            args: [wallet],
+          }),
+          chainClient.getBalance({ address: wallet }),
+        ]);
+        response.json({
+          asset: "USDT",
+          chainId: deps.config.network.chainId,
+          decimals: USDT_DECIMALS,
+          balanceBaseUnits: balanceBaseUnits.toString(),
+          nativeBalanceWei: nativeBalanceWei.toString(),
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(
+    "/api/portfolio/:wallet/botchain",
+    requireActor(auth),
+    async (request, response, next) => {
+      try {
+        const wallet = addressSchema
+          .parse(request.params.wallet)
+          .toLowerCase() as Address;
+        assertSameWallet(response.locals.actor, wallet);
+        const candidates = await deps.candidates.getRankingCandidates(
+          Number.MAX_SAFE_INTEGER,
+        );
+        const contracts = candidates
+          .map((candidate) => candidate.contract)
+          .filter((contract): contract is Address => Boolean(contract));
+        const balances = await deps.bdex.tokenBalances(wallet, contracts);
+        response.json({
+          chainId: deps.config.network.chainId,
+          address: wallet,
+          tokens: candidates.flatMap((candidate) => {
+            if (!candidate.contract) return [];
+            const balance = balances.get(candidate.contract.toLowerCase()) ?? 0n;
+            if (balance <= 0n) return [];
+            return [
+              {
+                assetId: candidate.assetId,
+                contract: candidate.contract,
+                symbol: candidate.symbol,
+                name: candidate.name,
+                kind: candidate.kind,
+                decimals: candidate.decimals ?? 18,
+                balanceBaseUnits: balance.toString(),
+                iconUrl: candidate.iconUrl,
+                priceUsd: candidate.priceUsd,
+                priceUpdatedAt: candidate.marketDataUpdatedAt,
+                marketDataSource: candidate.marketDataSource,
+                lumoraFeedId: candidate.lumoraFeedId,
+              },
+            ];
+          }),
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.post("/api/preferences", requireActor(auth), async (request, response, next) => {
     try {
       const actor = response.locals.actor as ExecutionActor;
       const preferences = onboardingPreferencesSchema.parse(request.body);
-      response.json(await deps.store.setPreferences(actor.userId, preferences, actor.wallet));
+      response.json(
+        await deps.store.setPreferences(actor.userId, preferences, actor.wallet),
+      );
     } catch (error) {
       next(error);
     }
@@ -267,27 +391,34 @@ export function createApp(deps: AppDependencies) {
   app.get("/api/preferences", requireActor(auth), async (_request, response, next) => {
     try {
       const actor = response.locals.actor as ExecutionActor;
-      response.json({ preferences: await deps.store.getPreferences(actor.userId) });
+      const preferences = await deps.store.getPreferences(actor.userId);
+      if (!preferences) {
+        throw new PolicyError("PREFERENCES_NOT_SET", "No saved preferences.");
+      }
+      response.json(preferences);
     } catch (error) {
       next(error);
     }
   });
 
-  app.post("/api/sessions", requireActor(auth), async (request, response, next) => {
+  app.post("/api/sessions/open", requireActor(auth), async (request, response, next) => {
     try {
       const actor = response.locals.actor as ExecutionActor;
       const body = z
         .object({
           cadence: z.enum(["daily", "weekly", "monthly"]).default("weekly"),
+          executionProvider: z.literal("BDEX").default("BDEX"),
+          chain: z.literal("BOTCHAIN").default("BOTCHAIN"),
+          feedRankingProvider: z.enum(["DETERMINISTIC"]).default("DETERMINISTIC"),
         })
         .parse(request.body ?? {});
       const session = await deps.store.openSession(
         actor.wallet,
         sessionEpochId(body.cadence),
-        "BDEX",
-        "BOTCHAIN",
+        body.executionProvider,
+        body.chain,
         actor.userId,
-        "DETERMINISTIC",
+        body.feedRankingProvider,
       );
       response.json(session);
     } catch (error) {
@@ -302,8 +433,11 @@ export function createApp(deps: AppDependencies) {
       if (!session || session.wallet !== actor.wallet) {
         throw new PolicyError("SESSION_NOT_FOUND", "Session not found.");
       }
-      const preferences = onboardingPreferencesSchema.parse(request.body.preferences ?? request.body);
-      const excluded = z.array(z.string()).optional().parse(request.body.excludedAssetIds) ?? [];
+      const preferences = onboardingPreferencesSchema.parse(
+        request.body?.preferences ?? request.body,
+      );
+      const excluded =
+        z.array(z.string()).optional().parse(request.body?.excludedAssetIds) ?? [];
       const budget = budgetForTicket(
         preferences.ticketSizeUsd,
         preferences.periodLimitUsd ?? 100,
@@ -339,7 +473,9 @@ export function createApp(deps: AppDependencies) {
       });
       const ranked = await deps.inference.rank(rankingInput);
       const ranking = validateRanking(ranked.output, rankingInput, rankingCandidates);
-      const pageIds = ranking.assets.slice(0, FEED_PAGE_SIZE).map((asset) => asset.assetId);
+      const pageIds = ranking.assets
+        .slice(0, FEED_PAGE_SIZE)
+        .map((asset) => asset.assetId);
       const candidates = await deps.candidates.getCandidatesForFeed(
         actor.wallet,
         pageIds,
@@ -357,14 +493,25 @@ export function createApp(deps: AppDependencies) {
         candidates,
         inputCommitment: rankingInput.inputCommitment,
       });
-      const cards = eligibleFeedCandidates(candidates).map((candidate, index) => {
-        const rankedAsset = ranking.assets.find((asset) => asset.assetId === candidate.assetId);
+      const eligible = eligibleFeedCandidates(candidates);
+      if (!eligible.length) {
+        throw new PolicyError(
+          "NO_ELIGIBLE_CANDIDATES_FOR_PREFERENCES",
+          "No BDEX route could be quoted for this ticket size.",
+        );
+      }
+      const cards = eligible.map((candidate, index) => {
+        const rankedAsset = ranking.assets.find(
+          (asset) => asset.assetId === candidate.assetId,
+        );
         return {
           assetId: candidate.assetId,
           action: "BUY" as const,
           rank: index + 1,
           amountInBaseUnits: budget.slotBudgetBaseUnits,
-          scoreBps: rankedAsset?.scoreBps ?? candidate.crowdScoreBps,
+          scoreBps: rankedAsset?.scoreBps || candidate.crowdScoreBps,
+          marketCapRank: candidate.marketCapRank,
+          marketCapRankSource: candidate.marketCapRankSource,
           evidenceIds: candidate.evidenceIds,
           reason: rankedAsset?.reason ?? candidate.reason,
         };
@@ -420,7 +567,7 @@ export function createApp(deps: AppDependencies) {
       if (usdt < required) {
         throw new PolicyError(
           "INSUFFICIENT_FUNDS",
-          `Basket requires ${formatUnits(required, USDT_DECIMALS)} USDT, but this wallet has ${formatUnits(usdt, USDT_DECIMALS)} USDT.`,
+          `This basket needs ${formatUnits(required, USDT_DECIMALS)} USDT and the wallet holds ${formatUnits(usdt, USDT_DECIMALS)} USDT.`,
         );
       }
       const candidates = await deps.candidates.getCandidatesForExecution(
@@ -429,10 +576,10 @@ export function createApp(deps: AppDependencies) {
         parsed.selections[0]?.amountInBaseUnits,
         new Date(),
       );
+      // Oracle-backed assets must still agree with the chain before money moves.
       for (const candidate of candidates) {
-        if (candidate.lumoraFeedId) {
-          await deps.lumora.verifiedPrice(candidate.lumoraFeedId);
-        }
+        if (!candidate.lumoraFeedId) continue;
+        await deps.lumora.verifiedPrice(candidate.lumoraFeedId);
       }
       validateExecutionSelection(parsed, candidates);
       const prepared = await deps.execution.prepareBasket(
@@ -442,21 +589,22 @@ export function createApp(deps: AppDependencies) {
         actor.txOrigin,
       );
       const generatedAt = new Date().toISOString();
-      const authorizedPlanHash = executionIntent({
+      const totalInputBaseUnits = prepared.quotes
+        .reduce((sum, quote) => sum + BigInt(quote.amountInBaseUnits), 0n)
+        .toString();
+      const intent = {
         sessionId: session.id,
         epochId: session.epochId,
-        executionProvider: "BDEX",
-        chain: "BOTCHAIN",
+        executionProvider: "BDEX" as const,
+        chain: "BOTCHAIN" as const,
         chainId: deps.config.network.chainId,
         inputToken: deps.config.network.usdt,
         signingWallet: actor.wallet,
-        totalInputBaseUnits: prepared.quotes
-          .reduce((sum, quote) => sum + BigInt(quote.amountInBaseUnits), 0n)
-          .toString(),
+        totalInputBaseUnits,
         policyHash: policyHash(parsed.selections, parsed.periodLimitUsd),
         quotes: prepared.quotes,
         generatedAt,
-      });
+      };
       const plan: ExecutionPlan = {
         executionId: randomUUID(),
         sessionId: session.id,
@@ -466,11 +614,9 @@ export function createApp(deps: AppDependencies) {
         chainId: deps.config.network.chainId,
         inputToken: deps.config.network.usdt,
         signingWallet: actor.wallet,
-        totalInputBaseUnits: prepared.quotes
-          .reduce((sum, quote) => sum + BigInt(quote.amountInBaseUnits), 0n)
-          .toString(),
-        authorizedPlanHash,
-        policyHash: policyHash(parsed.selections, parsed.periodLimitUsd),
+        totalInputBaseUnits,
+        authorizedPlanHash: executionIntent(intent),
+        policyHash: intent.policyHash,
         callCommitments: prepared.walletCalls.map((call) =>
           callCommitment(call.transaction),
         ),
@@ -489,16 +635,24 @@ export function createApp(deps: AppDependencies) {
       const actor = response.locals.actor as ExecutionActor;
       const body = z
         .object({
-          transactionHashes: z.array(z.string().regex(/^0x[a-fA-F0-9]{64}$/)).min(1),
+          transactionHashes: z
+            .array(z.string().regex(/^0x[a-fA-F0-9]{64}$/))
+            .min(1),
+          batched: z.boolean().optional(),
         })
         .parse(request.body);
-      const execution = await requireOwnedExecution(deps.store, String(request.params.id), actor);
-      const updated = await deps.store.updateExecution(
-        execution.plan.executionId,
-        "SUBMITTED",
-        body.transactionHashes,
+      const execution = await requireOwnedExecution(
+        deps.store,
+        String(request.params.id),
+        actor,
       );
-      response.json(updated);
+      response.json(
+        await deps.store.updateExecution(
+          execution.plan.executionId,
+          "SUBMITTED",
+          body.transactionHashes,
+        ),
+      );
     } catch (error) {
       next(error);
     }
@@ -507,9 +661,15 @@ export function createApp(deps: AppDependencies) {
   app.post("/api/executions/:id/reconcile", requireActor(auth), async (request, response, next) => {
     try {
       const actor = response.locals.actor as ExecutionActor;
-      const execution = await requireOwnedExecution(deps.store, String(request.params.id), actor);
+      const execution = await requireOwnedExecution(
+        deps.store,
+        String(request.params.id),
+        actor,
+      );
       const hashes = execution.transactionHashes;
-      if (!hashes.length) throw new PolicyError("NOT_SUBMITTED", "No transaction hashes yet.");
+      if (!hashes.length) {
+        throw new PolicyError("NOT_SUBMITTED", "No transaction hashes yet.");
+      }
       const outputs: ExecutionRecord["settledOutputs"] = [];
       for (const hash of hashes) {
         const receipt = await deps.bdex.receiptTransfers(
@@ -571,75 +731,138 @@ export function createApp(deps: AppDependencies) {
     }
   });
 
-  app.post("/api/exits/prepare", requireActor(auth), async (request, response, next) => {
-    try {
-      const actor = response.locals.actor as ExecutionActor;
-      const body = z
-        .object({
-          assetId: z.string().min(1),
-          amountInBaseUnits: z.string().regex(/^[0-9]+$/),
-          slippageBps: z.number().int().min(1).max(100).default(50),
-        })
-        .parse(request.body);
-      const [candidate] = await deps.candidates.getCandidatesForExecution(
-        actor.wallet,
-        [body.assetId],
-        body.amountInBaseUnits,
-      );
-      if (!candidate) {
-        throw new PolicyError("ASSET_NOT_ELIGIBLE", "No BDEX exit route for this asset.");
+  app.post(
+    "/api/positions/:assetId/exit/quote",
+    requireActor(auth),
+    async (request, response, next) => {
+      try {
+        const actor = response.locals.actor as ExecutionActor;
+        const assetId = String(request.params.assetId);
+        const body = z
+          .object({
+            amountInBaseUnits: z.string().regex(/^[0-9]+$/),
+            slippageBps: z.number().int().min(1).max(100).default(50),
+          })
+          .parse(request.body ?? {});
+        const [candidate] = await deps.candidates.getCandidatesForExecution(
+          actor.wallet,
+          [assetId],
+          body.amountInBaseUnits,
+        );
+        if (!candidate) {
+          throw new PolicyError(
+            "ASSET_NOT_ELIGIBLE",
+            "No BDEX exit route for this asset.",
+          );
+        }
+        const prepared = await deps.execution.prepareExit(
+          actor.wallet,
+          candidate,
+          body.amountInBaseUnits,
+          body.slippageBps,
+          actor.txOrigin,
+        );
+        response.json({
+          kind: "EVM_CALLS",
+          provider: "BDEX",
+          asset: {
+            assetId: candidate.assetId,
+            symbol: candidate.symbol,
+            decimals: candidate.decimals,
+          },
+          quote: prepared.quote,
+          walletCalls: prepared.walletCalls,
+        });
+      } catch (error) {
+        next(error);
       }
-      const prepared = await deps.execution.prepareExit(
-        actor.wallet,
-        candidate,
-        body.amountInBaseUnits,
-        body.slippageBps,
-        actor.txOrigin,
-      );
-      response.json({
-        kind: "EVM_CALLS",
-        provider: "BDEX",
-        asset: {
-          assetId: candidate.assetId,
-          symbol: candidate.symbol,
-          decimals: candidate.decimals,
-        },
-        quote: prepared.quote,
-        walletCalls: prepared.walletCalls,
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
+    },
+  );
 
-  app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
-    if (error instanceof ZodError) {
-      response.status(400).json({ code: "INVALID_REQUEST", message: error.message });
-      return;
-    }
-    if (error instanceof PolicyError) {
-      response.status(error.code === "SESSION_NOT_FOUND" ? 404 : 400).json({
-        code: error.code,
-        message: error.message,
-      });
-      return;
-    }
-    if (error instanceof ExecutionProviderError) {
-      response.status(409).json({
-        code: error.code,
-        message: error.message,
-      });
-      return;
-    }
-    const message = error instanceof Error ? error.message : "INTERNAL_ERROR";
-    const authFailure = /SIWE|WALLET_DOES_NOT_MATCH|ACCESS_TOKEN/.test(message);
-    response.status(authFailure ? 401 : 500).json({
-      code: authFailure ? "AUTH_REQUIRED" : "INTERNAL_ERROR",
-      message: authFailure ? "Connect MetaMask and sign in again." : message,
-    });
-  });
-
+  app.use(errorHandler);
   return app;
+}
+
+function errorHandler(
+  error: unknown,
+  _request: Request,
+  response: Response,
+  _next: NextFunction,
+) {
+  if (error instanceof ZodError) {
+    respondWithError(response, 400, "INVALID_REQUEST", error.message);
+    return;
+  }
+  if (error instanceof PolicyError) {
+    const status =
+      error.code === "SESSION_NOT_FOUND" ||
+      error.code === "EXECUTION_NOT_FOUND" ||
+      error.code === "ASSET_NOT_FOUND" ||
+      error.code === "PREFERENCES_NOT_SET"
+        ? 404
+        : 400;
+    respondWithError(response, status, error.code, error.message);
+    return;
+  }
+  if (error instanceof ExecutionProviderError) {
+    respondWithError(response, 409, error.code, error.message);
+    return;
+  }
+  if (error instanceof LumoraStalePriceError) {
+    respondWithError(
+      response,
+      409,
+      "STALE_ORACLE",
+      "Lumora has not published a fresh price for this asset yet.",
+    );
+    return;
+  }
+  if (error instanceof LumoraUnknownAssetError) {
+    respondWithError(
+      response,
+      404,
+      "ASSET_NOT_FOUND",
+      "Lumora does not publish this asset.",
+    );
+    return;
+  }
+  const message = error instanceof Error ? error.message : "INTERNAL_ERROR";
+  if (/SIWE|WALLET_DOES_NOT_MATCH|ACCESS_TOKEN|AUTH/.test(message)) {
+    respondWithError(
+      response,
+      401,
+      "AUTH_REQUIRED",
+      "Connect MetaMask and sign in again.",
+    );
+    return;
+  }
+  respondWithError(response, 500, "INTERNAL_ERROR", message);
+}
+
+/**
+ * The client reads `error` for the code, so both keys are sent to keep the
+ * payload readable from logs as well.
+ */
+function respondWithError(
+  response: Response,
+  status: number,
+  code: string,
+  message: string,
+) {
+  response.status(status).json({ error: code, code, message });
+}
+
+function toChartPoint(point: { timestamp: number; price: number }) {
+  return { timestamp: point.timestamp, price: point.price };
+}
+
+function assetCategories(candidate: RankingCandidate) {
+  const categories = new Set<string>();
+  if (candidate.lumoraFamily) categories.add(candidate.lumoraFamily);
+  categories.add(candidate.kind);
+  if (candidate.lumoraFeedId) categories.add("LUMORA");
+  categories.add("BDEX");
+  return [...categories];
 }
 
 function requireActor(auth: SiweWalletAuth) {

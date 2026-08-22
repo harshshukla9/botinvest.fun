@@ -4,74 +4,105 @@ import type { PublicConfig } from "../api";
 import { WalletMenu } from "./WalletMenu";
 
 interface Props {
-  active: "week" | "positions" | "receipts" | "account";
-  onNavigate: (target: Props["active"]) => void;
-  wallet?: string;
-  onWallet?: () => void;
-  walletReady?: boolean;
-  navigationEnabled?: boolean;
-  config: PublicConfig;
-  onDisconnect: () => void;
-  children: ReactNode;
+	active: "week" | "positions" | "receipts" | "account";
+	onNavigate: (target: Props["active"]) => void;
+	config: PublicConfig;
+	wallet?: string;
+	onWallet?: () => void;
+	onDisconnect?: () => void;
+	walletReady?: boolean;
+	walletBusy?: boolean;
+	navigationEnabled?: boolean;
+	children: ReactNode;
 }
 
 export function AppShell({
-  active,
-  onNavigate,
-  wallet,
-  onWallet,
-  walletReady = true,
-  navigationEnabled = true,
-  config,
-  onDisconnect,
-  children,
+	active,
+	onNavigate,
+	config,
+	wallet,
+	onWallet,
+	onDisconnect,
+	walletReady = true,
+	walletBusy = false,
+	navigationEnabled = true,
+	children,
 }: Props) {
-  useEffect(() => {
-    document.documentElement.dataset.chain = "botchain";
-  }, []);
+	useEffect(() => {
+		const root = document.documentElement;
+		const themeColor = document.querySelector<HTMLMetaElement>(
+			'meta[name="theme-color"]',
+		);
+		const previousChain = root.dataset.chain;
+		const previousThemeColor = themeColor?.content;
 
-  return (
-    <div className="app-shell">
-      <header className={navigationEnabled ? "topbar" : "topbar topbar-onboarding"}>
-        <button
-          type="button"
-          className="brand"
-          onClick={() => onNavigate("week")}
-          aria-label="botinvest home"
-        >
-          bot<span>invest</span>
-        </button>
-        {navigationEnabled ? (
-          <nav aria-label="Primary navigation">
-            {(
-              [
-                ["week", "Basket"],
-                ["positions", "Portfolio"],
-                ["receipts", "Activity"],
-                ["account", "Account"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                className={active === id ? "active" : ""}
-                onClick={() => onNavigate(id)}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
-        ) : null}
-        {wallet && walletReady ? (
-          <WalletMenu wallet={wallet} config={config} onDisconnect={onDisconnect} />
-        ) : (
-          <button type="button" className="wallet-menu-trigger" onClick={onWallet}>
-            <Wallet aria-hidden="true" />
-            Connect MetaMask
-          </button>
-        )}
-      </header>
-      {children}
-    </div>
-  );
+		root.dataset.chain = "botchain";
+		if (themeColor) themeColor.content = "#f1f3f6";
+
+		return () => {
+			if (previousChain) root.dataset.chain = previousChain;
+			else delete root.dataset.chain;
+			if (themeColor && previousThemeColor) {
+				themeColor.content = previousThemeColor;
+			}
+		};
+	}, []);
+
+	return (
+		<div className="app-shell">
+			<header
+				className={navigationEnabled ? "topbar" : "topbar topbar-onboarding"}
+			>
+				<button
+					type="button"
+					className="brand"
+					onClick={() => onNavigate("week")}
+					aria-label="botinvest home"
+				>
+					bot<span>invest</span>
+				</button>
+				{navigationEnabled ? (
+					<nav aria-label="Primary navigation">
+						{[
+							["week", "Basket"],
+							["positions", "Portfolio"],
+							["receipts", "Activity"],
+							["account", "Account"],
+						].map(([id, label]) => (
+							<button
+								type="button"
+								key={id}
+								className={active === id ? "nav-link active" : "nav-link"}
+								onClick={() => onNavigate(id as Props["active"])}
+							>
+								{label}
+							</button>
+						))}
+					</nav>
+				) : null}
+				{wallet ? (
+					<div className="wallet-pill">
+						<WalletMenu
+							wallet={wallet}
+							config={config}
+							onDisconnect={onDisconnect}
+						/>
+					</div>
+				) : (
+					<button
+						type="button"
+						className="wallet-button"
+						onClick={onWallet}
+						disabled={!walletReady || walletBusy}
+						aria-label="Connect wallet with MetaMask"
+						title="Connect wallet with MetaMask"
+					>
+						<Wallet size={17} strokeWidth={1.7} />
+						{walletBusy ? "Connecting…" : "Connect wallet"}
+					</button>
+				)}
+			</header>
+			{children}
+		</div>
+	);
 }

@@ -28,7 +28,7 @@ export interface ProviderSnapshotCache {
 }
 
 export interface WalletCall {
-  kind: "APPROVAL" | "SWAP";
+  kind: "CANCEL_APPROVAL" | "APPROVAL" | "SWAP";
   assetId?: string;
   transaction: {
     to: string;
@@ -45,6 +45,7 @@ export interface AssetDiscoveryProvider {
     excludedAssetIds?: string[],
     options?: CandidateDiscoveryOptions,
   ): Promise<RankingCandidate[]>;
+  getRankingCandidate(assetId: string): Promise<RankingCandidate | undefined>;
 }
 
 export interface ExecutionEligibilityProvider {

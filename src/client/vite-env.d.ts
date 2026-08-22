@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
 
-declare module "canvas-confetti";
+import type { EthereumProvider } from "./metamask";
 
-interface Window {
-  ethereum?: {
-    request(args: { method: string; params?: unknown[] }): Promise<unknown>;
-  };
+declare global {
+	interface Window {
+		ethereum?: EthereumProvider;
+	}
 }

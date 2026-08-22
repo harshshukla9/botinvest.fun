@@ -83,7 +83,8 @@ export const BOT_NETWORKS: Record<BotNetworkName, BotNetwork> = {
   },
 };
 
-export const LUMORA_API_BASE = "https://lumora-oracle.vercel.app";
+export const LUMORA_API_BASE = "https://botchain-commodity-oracle.vercel.app";
+export const LUMORA_APP_BASE = "https://botchain-commodity-oracle.vercel.app";
 
 export const LUMORA_CONSUMER_ABI = [
   {
